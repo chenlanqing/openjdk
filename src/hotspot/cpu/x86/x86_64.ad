@@ -5543,7 +5543,7 @@ instruct maxF_reg(legRegF dst, legRegF a, legRegF b, legRegF tmp, legRegF atmp, 
   ins_pipe( pipe_slow );
 %}
 
-instruct maxF_reduction_reg(regF dst, regF a, regF b, regF xmmt, rRegI tmp, rFlagsReg cr) %{
+instruct maxF_reduction_reg(legRegF dst, legRegF a, legRegF b, legRegF xmmt, rRegI tmp, rFlagsReg cr) %{
   predicate(UseAVX > 0 && n->is_reduction());
   match(Set dst (MaxF a b));
   effect(USE a, USE b, TEMP xmmt, TEMP tmp, KILL cr);
@@ -5579,7 +5579,7 @@ instruct maxD_reg(legRegD dst, legRegD a, legRegD b, legRegD tmp, legRegD atmp, 
   ins_pipe( pipe_slow );
 %}
 
-instruct maxD_reduction_reg(regD dst, regD a, regD b, regD xmmt, rRegL tmp, rFlagsReg cr) %{
+instruct maxD_reduction_reg(legRegD dst, legRegD a, legRegD b, legRegD xmmt, rRegL tmp, rFlagsReg cr) %{
   predicate(UseAVX > 0 && n->is_reduction());
   match(Set dst (MaxD a b));
   effect(USE a, USE b, TEMP xmmt, TEMP tmp, KILL cr);
@@ -5615,7 +5615,7 @@ instruct minF_reg(legRegF dst, legRegF a, legRegF b, legRegF tmp, legRegF atmp, 
   ins_pipe( pipe_slow );
 %}
 
-instruct minF_reduction_reg(regF dst, regF a, regF b, regF xmmt, rRegI tmp, rFlagsReg cr) %{
+instruct minF_reduction_reg(legRegF dst, legRegF a, legRegF b, legRegF xmmt, rRegI tmp, rFlagsReg cr) %{
   predicate(UseAVX > 0 && n->is_reduction());
   match(Set dst (MinF a b));
   effect(USE a, USE b, TEMP xmmt, TEMP tmp, KILL cr);
@@ -5651,7 +5651,7 @@ instruct minD_reg(legRegD dst, legRegD a, legRegD b, legRegD tmp, legRegD atmp, 
   ins_pipe( pipe_slow );
 %}
 
-instruct minD_reduction_reg(regD dst, regD a, regD b, regD xmmt, rRegL tmp, rFlagsReg cr) %{
+instruct minD_reduction_reg(legRegD dst, legRegD a, legRegD b, legRegD xmmt, rRegL tmp, rFlagsReg cr) %{
   predicate(UseAVX > 0 && n->is_reduction());
   match(Set dst (MinD a b));
   effect(USE a, USE b, TEMP xmmt, TEMP tmp, KILL cr);
@@ -6561,6 +6561,47 @@ instruct storeSSD(stackSlotD dst, regD src)
   format %{ "movsd   $dst, $src\t# double stk" %}
   ins_encode %{
     __ movdbl(Address(rsp, $dst$$disp), $src$$XMMRegister);
+  %}
+  ins_pipe(pipe_slow); // XXX
+%}
+
+instruct cacheWB(indirect addr)
+%{
+  predicate(VM_Version::supports_data_cache_line_flush());
+  match(CacheWB addr);
+
+  ins_cost(100);
+  format %{"cache wb $addr" %}
+  ins_encode %{
+    assert($addr->index_position() < 0, "should be");
+    assert($addr$$disp == 0, "should be");
+    __ cache_wb(Address($addr$$base$$Register, 0));
+  %}
+  ins_pipe(pipe_slow); // XXX
+%}
+
+instruct cacheWBPreSync()
+%{
+  predicate(VM_Version::supports_data_cache_line_flush());
+  match(CacheWBPreSync);
+
+  ins_cost(100);
+  format %{"cache wb presync" %}
+  ins_encode %{
+    __ cache_wbsync(true);
+  %}
+  ins_pipe(pipe_slow); // XXX
+%}
+
+instruct cacheWBPostSync()
+%{
+  predicate(VM_Version::supports_data_cache_line_flush());
+  match(CacheWBPostSync);
+
+  ins_cost(100);
+  format %{"cache wb postsync" %}
+  ins_encode %{
+    __ cache_wbsync(false);
   %}
   ins_pipe(pipe_slow); // XXX
 %}

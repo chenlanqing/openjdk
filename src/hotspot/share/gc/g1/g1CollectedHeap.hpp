@@ -31,7 +31,6 @@
 #include "gc/g1/g1CollectionSet.hpp"
 #include "gc/g1/g1CollectorState.hpp"
 #include "gc/g1/g1ConcurrentMark.hpp"
-#include "gc/g1/g1DirtyCardQueue.hpp"
 #include "gc/g1/g1EdenRegions.hpp"
 #include "gc/g1/g1EvacFailure.hpp"
 #include "gc/g1/g1EvacStats.hpp"
@@ -42,6 +41,7 @@
 #include "gc/g1/g1HRPrinter.hpp"
 #include "gc/g1/g1HeapRegionAttr.hpp"
 #include "gc/g1/g1MonitoringSupport.hpp"
+#include "gc/g1/g1RedirtyCardsQueue.hpp"
 #include "gc/g1/g1SurvivorRegions.hpp"
 #include "gc/g1/g1YCTypes.hpp"
 #include "gc/g1/heapRegionManager.hpp"
@@ -73,6 +73,7 @@ class ObjectClosure;
 class SpaceClosure;
 class CompactibleSpaceClosure;
 class Space;
+class G1CardTableEntryClosure;
 class G1CollectionSet;
 class G1Policy;
 class G1HotCardCache;
@@ -353,6 +354,7 @@ private:
     assert(Thread::current()->is_VM_thread(), "current thread is not VM thread"); \
   } while (0)
 
+#ifdef ASSERT
 #define assert_used_and_recalculate_used_equal(g1h)                           \
   do {                                                                        \
     size_t cur_used_bytes = g1h->used();                                      \
@@ -361,6 +363,9 @@ private:
            " same as recalculated used(" SIZE_FORMAT ").",                    \
            cur_used_bytes, recal_used_bytes);                                 \
   } while (0)
+#else
+#define assert_used_and_recalculate_used_equal(g1h) do {} while(0)
+#endif
 
   const char* young_gc_name() const;
 
@@ -757,7 +762,9 @@ private:
 
 public:
   void pre_evacuate_collection_set(G1EvacuationInfo& evacuation_info, G1ParScanThreadStateSet* pss);
-  void post_evacuate_collection_set(G1EvacuationInfo& evacuation_info, G1ParScanThreadStateSet* pss);
+  void post_evacuate_collection_set(G1EvacuationInfo& evacuation_info,
+                                    G1RedirtyCardsQueueSet* rdcqs,
+                                    G1ParScanThreadStateSet* pss);
 
   void expand_heap_after_young_collection();
   // Update object copying statistics.
@@ -768,10 +775,6 @@ public:
 
   // The g1 remembered set of the heap.
   G1RemSet* _rem_set;
-
-  // A set of cards that cover the objects for which the Rsets should be updated
-  // concurrently after the collection.
-  G1DirtyCardQueueSet _dirty_card_queue_set;
 
   // After a collection pause, convert the regions in the collection set into free
   // regions.
@@ -798,17 +801,17 @@ public:
 
   // Failed evacuations cause some logical from-space objects to have
   // forwarding pointers to themselves.  Reset them.
-  void remove_self_forwarding_pointers();
+  void remove_self_forwarding_pointers(G1RedirtyCardsQueueSet* rdcqs);
 
   // Restore the objects in the regions in the collection set after an
   // evacuation failure.
-  void restore_after_evac_failure();
+  void restore_after_evac_failure(G1RedirtyCardsQueueSet* rdcqs);
 
   PreservedMarksSet _preserved_marks_set;
 
   // Preserve the mark of "obj", if necessary, in preparation for its mark
   // word being overwritten with a self-forwarding-pointer.
-  void preserve_mark_during_evac_failure(uint worker_id, oop obj, markOop m);
+  void preserve_mark_during_evac_failure(uint worker_id, oop obj, markWord m);
 
 #ifndef PRODUCT
   // Support for forcing evacuation failures. Analogous to
@@ -929,9 +932,6 @@ public:
   RefToScanQueue *task_queue(uint i) const;
 
   uint num_task_queues() const;
-
-  // A set of cards where updates happened during the GC
-  G1DirtyCardQueueSet& dirty_card_queue_set() { return _dirty_card_queue_set; }
 
   // Create a G1CollectedHeap.
   // Must call the initialize method afterwards.
@@ -1211,11 +1211,11 @@ public:
   // address "addr".  We say "blocks" instead of "object" since some heaps
   // may not pack objects densely; a chunk may either be an object or a
   // non-object.
-  virtual HeapWord* block_start(const void* addr) const;
+  HeapWord* block_start(const void* addr) const;
 
   // Requires "addr" to be the start of a block, and returns "TRUE" iff
   // the block is an object.
-  virtual bool block_is_obj(const HeapWord* addr) const;
+  bool block_is_obj(const HeapWord* addr) const;
 
   // Section on thread-local allocation buffers (TLABs)
   // See CollectedHeap for semantics.
@@ -1359,7 +1359,8 @@ public:
   void complete_cleaning(BoolObjectClosure* is_alive, bool class_unloading_occurred);
 
   // Redirty logged cards in the refinement queue.
-  void redirty_logged_cards();
+  void redirty_logged_cards(G1RedirtyCardsQueueSet* rdcqs);
+
   // Verification
 
   // Deduplicate the string
@@ -1426,6 +1427,9 @@ public:
   // The following two methods are helpful for debugging RSet issues.
   void print_cset_rsets() PRODUCT_RETURN;
   void print_all_rsets() PRODUCT_RETURN;
+
+  // Used to print information about locations in the hs_err file.
+  virtual bool print_location(outputStream* st, void* addr) const;
 
   size_t pending_card_num();
 };

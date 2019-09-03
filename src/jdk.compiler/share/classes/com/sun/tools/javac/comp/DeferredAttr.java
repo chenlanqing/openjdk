@@ -41,7 +41,6 @@ import com.sun.tools.javac.util.*;
 import com.sun.tools.javac.util.DefinedBy.Api;
 import com.sun.tools.javac.util.GraphUtils.DependencyKind;
 import com.sun.tools.javac.util.JCDiagnostic.DiagnosticPosition;
-import com.sun.tools.javac.code.Symbol.*;
 import com.sun.tools.javac.comp.Attr.ResultInfo;
 import com.sun.tools.javac.comp.Resolve.MethodResolutionPhase;
 import com.sun.tools.javac.resources.CompilerProperties.Errors;
@@ -482,26 +481,29 @@ public class DeferredAttr extends JCTree.Visitor {
      */
     JCTree attribSpeculative(JCTree tree, Env<AttrContext> env, ResultInfo resultInfo) {
         return attribSpeculative(tree, env, resultInfo, treeCopier,
-                (newTree)->new DeferredAttrDiagHandler(log, newTree), null);
+                (newTree)->new DeferredAttrDiagHandler(log, newTree), AttributionMode.SPECULATIVE, null);
     }
 
     JCTree attribSpeculative(JCTree tree, Env<AttrContext> env, ResultInfo resultInfo, LocalCacheContext localCache) {
         return attribSpeculative(tree, env, resultInfo, treeCopier,
-                (newTree)->new DeferredAttrDiagHandler(log, newTree), localCache);
+                (newTree)->new DeferredAttrDiagHandler(log, newTree), AttributionMode.SPECULATIVE, localCache);
     }
 
     <Z> JCTree attribSpeculative(JCTree tree, Env<AttrContext> env, ResultInfo resultInfo, TreeCopier<Z> deferredCopier,
-                                 Function<JCTree, DeferredDiagnosticHandler> diagHandlerCreator,
+                                 Function<JCTree, DeferredDiagnosticHandler> diagHandlerCreator, AttributionMode attributionMode,
                                  LocalCacheContext localCache) {
         final JCTree newTree = deferredCopier.copy(tree);
         Env<AttrContext> speculativeEnv = env.dup(newTree, env.info.dup(env.info.scope.dupUnshared(env.info.scope.owner)));
-        speculativeEnv.info.isSpeculative = true;
+        speculativeEnv.info.attributionMode = attributionMode;
         Log.DeferredDiagnosticHandler deferredDiagnosticHandler = diagHandlerCreator.apply(newTree);
+        int nwarnings = log.nwarnings;
+        log.nwarnings = 0;
         try {
             attr.attribTree(newTree, speculativeEnv, resultInfo);
             return newTree;
         } finally {
-            new UnenterScanner(env.toplevel.modle).scan(newTree);
+            log.nwarnings += nwarnings;
+            enter.unenter(env.toplevel, newTree);
             log.popDiagnosticHandler(deferredDiagnosticHandler);
             if (localCache != null) {
                 localCache.leave();
@@ -509,29 +511,6 @@ public class DeferredAttr extends JCTree.Visitor {
         }
     }
     //where
-
-        class UnenterScanner extends TreeScanner {
-            private final ModuleSymbol msym;
-
-            public UnenterScanner(ModuleSymbol msym) {
-                this.msym = msym;
-            }
-
-            @Override
-            public void visitClassDef(JCClassDecl tree) {
-                ClassSymbol csym = tree.sym;
-                //if something went wrong during method applicability check
-                //it is possible that nested expressions inside argument expression
-                //are left unchecked - in such cases there's nothing to clean up.
-                if (csym == null) return;
-                typeEnvs.remove(csym);
-                chk.removeCompiled(csym);
-                chk.clearLocalClassNameIndexes(csym);
-                syms.removeClass(msym, csym.flatname);
-                super.visitClassDef(tree);
-            }
-        }
-
         static class DeferredAttrDiagHandler extends Log.DeferredDiagnosticHandler {
 
             static class PosScanner extends TreeScanner {
@@ -1309,5 +1288,27 @@ public class DeferredAttr extends JCTree.Visitor {
                 stuck = true;
             }
         }
+    }
+
+    /**
+     * Mode of attribution (used in AttrContext).
+     */
+    enum AttributionMode {
+        /**Normal, non-speculative, attribution.*/
+        FULL(false),
+        /**Speculative attribution on behalf of an Analyzer.*/
+        ANALYZER(true),
+        /**Speculative attribution.*/
+        SPECULATIVE(true);
+
+        AttributionMode(boolean isSpeculative) {
+            this.isSpeculative = isSpeculative;
+        }
+
+        boolean isSpeculative() {
+            return isSpeculative;
+        }
+
+        final boolean isSpeculative;
     }
 }

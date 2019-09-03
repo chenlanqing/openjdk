@@ -270,8 +270,9 @@ JVM_handle_linux_signal(int sig,
 
 #ifdef CAN_SHOW_REGISTERS_ON_ASSERT
   if ((sig == SIGSEGV || sig == SIGBUS) && info != NULL && info->si_addr == g_assert_poison) {
-    handle_assert_poison_fault(ucVoid, info->si_addr);
-    return 1;
+    if (handle_assert_poison_fault(ucVoid, info->si_addr)) {
+      return 1;
+    }
   }
 #endif
 
@@ -476,6 +477,15 @@ JVM_handle_linux_signal(int sig,
         thread->set_pending_unsafe_access_error();
         os::Linux::ucontext_set_pc(uc, pc + Assembler::instr_len(pc));
         return true;
+      }
+    }
+
+    // jni_fast_Get<Primitive>Field can trap at certain pc's if a GC kicks in
+    // and the heap gets shrunk before the field access.
+    if ((sig == SIGSEGV) || (sig == SIGBUS)) {
+      address addr = JNI_FastGetField::find_slowcase_pc(pc);
+      if (addr != (address)-1) {
+        stub = addr;
       }
     }
   }

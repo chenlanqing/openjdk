@@ -512,9 +512,12 @@ public:
   void set_unload_classes(bool uc);
   bool unload_classes() const;
 
-  // Delete entries for dead interned string and clean up unreferenced symbols
-  // in symbol table, possibly in parallel.
-  void unload_classes_and_cleanup_tables(bool full_gc);
+  // Perform STW class unloading and weak root cleaning
+  void parallel_cleaning(bool full_gc);
+
+private:
+  void stw_unload_classes(bool full_gc);
+  void stw_process_weak_roots(bool full_gc);
 
 // ---------- Generic interface hooks
 // Minor things that super-interface expects us to implement to play nice with
@@ -533,6 +536,7 @@ public:
   // Used for parsing heap during error printing
   HeapWord* block_start(const void* addr) const;
   bool block_is_obj(const HeapWord* addr) const;
+  bool print_location(outputStream* st, void* addr) const;
 
   // Used for native heap walkers: heap dumpers, mostly
   void object_iterate(ObjectClosure* cl);

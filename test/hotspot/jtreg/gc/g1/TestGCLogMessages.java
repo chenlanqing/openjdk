@@ -97,13 +97,14 @@ public class TestGCLogMessages {
 
         // Merge Heap Roots
         new LogMessageWithLevel("Merge Heap Roots", Level.INFO),
+        new LogMessageWithLevel("Prepare Merge Heap Roots", Level.DEBUG),
+        new LogMessageWithLevel("Eager Reclaim", Level.DEBUG),
         new LogMessageWithLevel("Remembered Sets", Level.DEBUG),
         new LogMessageWithLevel("Merged Sparse", Level.DEBUG),
         new LogMessageWithLevel("Merged Fine", Level.DEBUG),
         new LogMessageWithLevel("Merged Coarse", Level.DEBUG),
         new LogMessageWithLevel("Hot Card Cache", Level.DEBUG),
         new LogMessageWithLevel("Log Buffers", Level.DEBUG),
-        new LogMessageWithLevel("Processed Buffers", Level.DEBUG),
         new LogMessageWithLevel("Dirty Cards", Level.DEBUG),
         new LogMessageWithLevel("Skipped Cards", Level.DEBUG),
         // Scan Heap Roots
@@ -157,9 +158,10 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("Reference Processing", Level.DEBUG),
         // VM internal reference processing
         new LogMessageWithLevel("Weak Processing", Level.DEBUG),
-        new LogMessageWithLevel("JNI weak processing", Level.DEBUG),
-        new LogMessageWithLevel("StringTable weak processing", Level.DEBUG),
-        new LogMessageWithLevel("VM weak processing", Level.DEBUG),
+        new LogMessageWithLevel("JNI weak", Level.DEBUG),
+        new LogMessageWithLevel("StringTable weak", Level.DEBUG),
+        new LogMessageWithLevel("ResolvedMethodTable weak", Level.DEBUG),
+        new LogMessageWithLevel("VM weak", Level.DEBUG),
 
         new LogMessageWithLevelC2OrJVMCIOnly("DerivedPointerTable Update", Level.DEBUG),
         new LogMessageWithLevel("Start New Collection Set", Level.DEBUG),

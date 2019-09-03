@@ -481,6 +481,7 @@ class Method : public Metadata {
   address get_i2c_entry();
   address get_c2i_entry();
   address get_c2i_unverified_entry();
+  address get_c2i_no_clinit_check_entry();
   AdapterHandlerEntry* adapter() const {
     return constMethod()->adapter();
   }
@@ -532,7 +533,6 @@ class Method : public Metadata {
     native_bind_event_is_interesting = true
   };
   address native_function() const                { return *(native_function_addr()); }
-  address critical_native_function();
 
   // Must specify a real function (not NULL).
   // Use clear_native_function() to unregister.

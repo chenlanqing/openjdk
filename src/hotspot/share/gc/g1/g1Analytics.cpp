@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 #include "precompiled.hpp"
 #include "gc/g1/g1Analytics.hpp"
 #include "gc/g1/g1Predictions.hpp"
+#include "runtime/globals.hpp"
 #include "runtime/os.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/numberSeq.hpp"
@@ -38,7 +39,7 @@ static double rs_length_diff_defaults[] = {
   0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 };
 
-static double cost_per_log_buffer_entry_ms_defaults[] = {
+static double cost_per_logged_card_ms_defaults[] = {
   0.01, 0.005, 0.005, 0.003, 0.003, 0.002, 0.002, 0.0015
 };
 
@@ -77,7 +78,7 @@ G1Analytics::G1Analytics(const G1Predictions* predictor) :
     _alloc_rate_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _prev_collection_pause_end_ms(0.0),
     _rs_length_diff_seq(new TruncatedSeq(TruncatedSeqLength)),
-    _cost_per_log_buffer_entry_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
+    _cost_per_logged_card_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _cost_scan_hcc_seq(new TruncatedSeq(TruncatedSeqLength)),
     _young_cards_per_entry_ratio_seq(new TruncatedSeq(TruncatedSeqLength)),
     _mixed_cards_per_entry_ratio_seq(new TruncatedSeq(TruncatedSeqLength)),
@@ -88,7 +89,7 @@ G1Analytics::G1Analytics(const G1Predictions* predictor) :
     _young_other_cost_per_region_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _non_young_other_cost_per_region_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _pending_cards_seq(new TruncatedSeq(TruncatedSeqLength)),
-    _rs_lengths_seq(new TruncatedSeq(TruncatedSeqLength)),
+    _rs_length_seq(new TruncatedSeq(TruncatedSeqLength)),
     _cost_per_byte_ms_during_cm_seq(new TruncatedSeq(TruncatedSeqLength)),
     _recent_prev_end_times_for_all_gcs_sec(new TruncatedSeq(NumPrevPausesForHeuristics)),
     _recent_avg_pause_time_ratio(0.0),
@@ -101,7 +102,7 @@ G1Analytics::G1Analytics(const G1Predictions* predictor) :
   int index = MIN2(ParallelGCThreads - 1, 7u);
 
   _rs_length_diff_seq->add(rs_length_diff_defaults[index]);
-  _cost_per_log_buffer_entry_ms_seq->add(cost_per_log_buffer_entry_ms_defaults[index]);
+  _cost_per_logged_card_ms_seq->add(cost_per_logged_card_ms_defaults[index]);
   _cost_scan_hcc_seq->add(0.0);
   _young_cards_per_entry_ratio_seq->add(young_cards_per_entry_ratio_defaults[index]);
   _young_only_cost_per_remset_card_ms_seq->add(young_only_cost_per_remset_card_ms_defaults[index]);
@@ -158,8 +159,8 @@ void G1Analytics::compute_pause_time_ratio(double interval_ms, double pause_time
     (pause_time_ms * _recent_prev_end_times_for_all_gcs_sec->num()) / interval_ms;
 }
 
-void G1Analytics::report_cost_per_log_buffer_entry_ms(double cost_per_log_buffer_entry_ms) {
-  _cost_per_log_buffer_entry_ms_seq->add(cost_per_log_buffer_entry_ms);
+void G1Analytics::report_cost_per_logged_card_ms(double cost_per_logged_card_ms) {
+  _cost_per_logged_card_ms_seq->add(cost_per_logged_card_ms);
 }
 
 void G1Analytics::report_cost_scan_hcc(double cost_scan_hcc) {
@@ -210,8 +211,8 @@ void G1Analytics::report_pending_cards(double pending_cards) {
   _pending_cards_seq->add(pending_cards);
 }
 
-void G1Analytics::report_rs_lengths(double rs_lengths) {
-  _rs_lengths_seq->add(rs_lengths);
+void G1Analytics::report_rs_length(double rs_length) {
+  _rs_length_seq->add(rs_length);
 }
 
 size_t G1Analytics::predict_rs_length_diff() const {
@@ -222,8 +223,8 @@ double G1Analytics::predict_alloc_rate_ms() const {
   return get_new_prediction(_alloc_rate_ms_seq);
 }
 
-double G1Analytics::predict_cost_per_log_buffer_entry_ms() const {
-  return get_new_prediction(_cost_per_log_buffer_entry_ms_seq);
+double G1Analytics::predict_cost_per_logged_card_ms() const {
+  return get_new_prediction(_cost_per_logged_card_ms_seq);
 }
 
 double G1Analytics::predict_scan_hcc_ms() const {
@@ -231,7 +232,7 @@ double G1Analytics::predict_scan_hcc_ms() const {
 }
 
 double G1Analytics::predict_rs_update_time_ms(size_t pending_cards) const {
-  return pending_cards * predict_cost_per_log_buffer_entry_ms() + predict_scan_hcc_ms();
+  return pending_cards * predict_cost_per_logged_card_ms() + predict_scan_hcc_ms();
 }
 
 double G1Analytics::predict_young_cards_per_entry_ratio() const {
@@ -310,8 +311,8 @@ double G1Analytics::predict_cleanup_time_ms() const {
   return get_new_prediction(_concurrent_mark_cleanup_times_ms);
 }
 
-size_t G1Analytics::predict_rs_lengths() const {
-  return get_new_size_prediction(_rs_lengths_seq);
+size_t G1Analytics::predict_rs_length() const {
+  return get_new_size_prediction(_rs_length_seq);
 }
 
 size_t G1Analytics::predict_pending_cards() const {

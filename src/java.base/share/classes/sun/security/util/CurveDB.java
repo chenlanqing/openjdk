@@ -62,7 +62,7 @@ public class CurveDB {
     }
 
     // Return a NamedCurve for the specified OID/name or null if unknown.
-    static NamedCurve lookup(String name) {
+    public static NamedCurve lookup(String name) {
         NamedCurve spec = oidMap.get(name);
         if (spec != null) {
             return spec;
@@ -83,7 +83,7 @@ public class CurveDB {
 
     // Convert the given ECParameterSpec object to a NamedCurve object.
     // If params does not represent a known named curve, return null.
-    static NamedCurve lookup(ECParameterSpec params) {
+    public static NamedCurve lookup(ECParameterSpec params) {
         if ((params instanceof NamedCurve) || (params == null)) {
             return (NamedCurve)params;
         }
@@ -104,21 +104,10 @@ public class CurveDB {
             if (namedCurve.getCurve().getField().getFieldSize() != fieldSize) {
                 continue;
             }
-            if (namedCurve.getCurve().equals(params.getCurve()) == false) {
-                continue;
+            if (ECUtil.equals(namedCurve, params)) {
+                // everything matches our named curve, return it
+                return namedCurve;
             }
-            if (namedCurve.getGenerator().equals(params.getGenerator()) ==
-                    false) {
-                continue;
-            }
-            if (namedCurve.getOrder().equals(params.getOrder()) == false) {
-                continue;
-            }
-            if (namedCurve.getCofactor() != params.getCofactor()) {
-                continue;
-            }
-            // everything matches our named curve, return it
-            return namedCurve;
         }
         // no match found
         return null;

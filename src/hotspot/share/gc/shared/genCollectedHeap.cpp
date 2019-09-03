@@ -47,6 +47,7 @@
 #include "gc/shared/genCollectedHeap.hpp"
 #include "gc/shared/genOopClosures.inline.hpp"
 #include "gc/shared/generationSpec.hpp"
+#include "gc/shared/locationPrinter.inline.hpp"
 #include "gc/shared/oopStorageParState.inline.hpp"
 #include "gc/shared/scavengableNMethods.hpp"
 #include "gc/shared/space.hpp"
@@ -204,6 +205,19 @@ void GenCollectedHeap::post_initialize() {
 void GenCollectedHeap::ref_processing_init() {
   _young_gen->ref_processor_init();
   _old_gen->ref_processor_init();
+}
+
+PreGenGCValues GenCollectedHeap::get_pre_gc_values() const {
+  const DefNewGeneration* const def_new_gen = (DefNewGeneration*) young_gen();
+
+  return PreGenGCValues(def_new_gen->used(),
+                        def_new_gen->capacity(),
+                        def_new_gen->eden()->used(),
+                        def_new_gen->eden()->capacity(),
+                        def_new_gen->from()->used(),
+                        def_new_gen->from()->capacity(),
+                        old_gen()->used(),
+                        old_gen()->capacity());
 }
 
 GenerationSpec* GenCollectedHeap::young_gen_spec() const {
@@ -581,9 +595,7 @@ void GenCollectedHeap::do_collection(bool           full,
   bool old_collects_young = complete && !ScavengeBeforeFullGC;
   bool do_young_collection = !old_collects_young && _young_gen->should_collect(full, size, is_tlab);
 
-  size_t young_prev_used = _young_gen->used();
-  size_t old_prev_used = _old_gen->used();
-  const metaspace::MetaspaceSizesSnapshot prev_meta_sizes;
+  const PreGenGCValues pre_gc_values = get_pre_gc_values();
 
   bool run_verification = total_collections() >= VerifyGCStartAt;
   bool prepared_for_verification = false;
@@ -625,8 +637,7 @@ void GenCollectedHeap::do_collection(bool           full,
       // Adjust generation sizes.
       _young_gen->compute_new_size();
 
-      print_heap_change(young_prev_used, old_prev_used);
-      MetaspaceUtils::print_metaspace_change(prev_meta_sizes);
+      print_heap_change(pre_gc_values);
 
       // Track memory usage and detect low memory after GC finishes
       MemoryService::track_memory_usage();
@@ -684,8 +695,7 @@ void GenCollectedHeap::do_collection(bool           full,
     MetaspaceGC::compute_new_size();
     update_full_collections_completed();
 
-    print_heap_change(young_prev_used, old_prev_used);
-    MetaspaceUtils::print_metaspace_change(prev_meta_sizes);
+    print_heap_change(pre_gc_values);
 
     // Track memory usage and detect low memory after GC finishes
     MemoryService::track_memory_usage();
@@ -861,11 +871,6 @@ void GenCollectedHeap::process_roots(StrongRootsScope* scope,
     AOTLoader::oops_do(strong_roots);
   }
 #endif
-#if INCLUDE_JVMCI
-  if (EnableJVMCI && _process_strong_tasks->try_claim_task(GCH_PS_jvmci_oops_do)) {
-    JVMCI::oops_do(strong_roots);
-  }
-#endif
   if (_process_strong_tasks->try_claim_task(GCH_PS_SystemDictionary_oops_do)) {
     SystemDictionary::oops_do(strong_roots);
   }
@@ -952,8 +957,9 @@ HeapWord** GenCollectedHeap::end_addr() const {
 // public collection interfaces
 
 void GenCollectedHeap::collect(GCCause::Cause cause) {
-  if (cause == GCCause::_wb_young_gc) {
-    // Young collection for the WhiteBox API.
+  if ((cause == GCCause::_wb_young_gc) ||
+      (cause == GCCause::_gc_locker)) {
+    // Young collection for WhiteBox or GCLocker.
     collect(cause, YoungGen);
   } else {
 #ifdef ASSERT
@@ -991,6 +997,11 @@ void GenCollectedHeap::collect_locked(GCCause::Cause cause, GenerationType max_g
   // Read the GC count while holding the Heap_lock
   unsigned int gc_count_before      = total_collections();
   unsigned int full_gc_count_before = total_full_collections();
+
+  if (GCLocker::should_discard(cause, gc_count_before)) {
+    return;
+  }
+
   {
     MutexUnlocker mu(Heap_lock);  // give up heap lock, execute gets it back
     VM_GenCollectFull op(gc_count_before, full_gc_count_before,
@@ -1005,24 +1016,15 @@ void GenCollectedHeap::do_full_collection(bool clear_all_soft_refs) {
 
 void GenCollectedHeap::do_full_collection(bool clear_all_soft_refs,
                                           GenerationType last_generation) {
-  GenerationType local_last_generation;
-  if (!incremental_collection_will_fail(false /* don't consult_young */) &&
-      gc_cause() == GCCause::_gc_locker) {
-    local_last_generation = YoungGen;
-  } else {
-    local_last_generation = last_generation;
-  }
-
   do_collection(true,                   // full
                 clear_all_soft_refs,    // clear_all_soft_refs
                 0,                      // size
                 false,                  // is_tlab
-                local_last_generation); // last_generation
+                last_generation);       // last_generation
   // Hack XXX FIX ME !!!
   // A scavenge may not have been attempted, or may have
   // been attempted and failed, because the old gen was too full
-  if (local_last_generation == YoungGen && gc_cause() == GCCause::_gc_locker &&
-      incremental_collection_will_fail(false /* don't consult_young */)) {
+  if (gc_cause() == GCCause::_gc_locker && incremental_collection_failed()) {
     log_debug(gc, jni)("GC locker: Trying a full collection because scavenge failed");
     // This time allow the old gen to be collected as well
     do_collection(true,                // full
@@ -1268,6 +1270,10 @@ void GenCollectedHeap::gc_threads_do(ThreadClosure* tc) const {
 void GenCollectedHeap::print_gc_threads_on(outputStream* st) const {
 }
 
+bool GenCollectedHeap::print_location(outputStream* st, void* addr) const {
+  return BlockLocationPrinter<GenCollectedHeap>::print_location(st, addr);
+}
+
 void GenCollectedHeap::print_tracing_info() const {
   if (log_is_enabled(Debug, gc, heap, exit)) {
     LogStreamHandle(Debug, gc, heap, exit) lsh;
@@ -1276,11 +1282,34 @@ void GenCollectedHeap::print_tracing_info() const {
   }
 }
 
-void GenCollectedHeap::print_heap_change(size_t young_prev_used, size_t old_prev_used) const {
-  log_info(gc, heap)("%s: " SIZE_FORMAT "K->" SIZE_FORMAT "K("  SIZE_FORMAT "K)",
-                     _young_gen->short_name(), young_prev_used / K, _young_gen->used() /K, _young_gen->capacity() /K);
-  log_info(gc, heap)("%s: " SIZE_FORMAT "K->" SIZE_FORMAT "K("  SIZE_FORMAT "K)",
-                     _old_gen->short_name(), old_prev_used / K, _old_gen->used() /K, _old_gen->capacity() /K);
+void GenCollectedHeap::print_heap_change(const PreGenGCValues& pre_gc_values) const {
+  const DefNewGeneration* const def_new_gen = (DefNewGeneration*) young_gen();
+
+  log_info(gc, heap)(HEAP_CHANGE_FORMAT" "
+                     HEAP_CHANGE_FORMAT" "
+                     HEAP_CHANGE_FORMAT,
+                     HEAP_CHANGE_FORMAT_ARGS(def_new_gen->short_name(),
+                                             pre_gc_values.young_gen_used(),
+                                             pre_gc_values.young_gen_capacity(),
+                                             def_new_gen->used(),
+                                             def_new_gen->capacity()),
+                     HEAP_CHANGE_FORMAT_ARGS("Eden",
+                                             pre_gc_values.eden_used(),
+                                             pre_gc_values.eden_capacity(),
+                                             def_new_gen->eden()->used(),
+                                             def_new_gen->eden()->capacity()),
+                     HEAP_CHANGE_FORMAT_ARGS("From",
+                                             pre_gc_values.from_used(),
+                                             pre_gc_values.from_capacity(),
+                                             def_new_gen->from()->used(),
+                                             def_new_gen->from()->capacity()));
+  log_info(gc, heap)(HEAP_CHANGE_FORMAT,
+                     HEAP_CHANGE_FORMAT_ARGS(old_gen()->short_name(),
+                                             pre_gc_values.old_gen_used(),
+                                             pre_gc_values.old_gen_capacity(),
+                                             old_gen()->used(),
+                                             old_gen()->capacity()));
+  MetaspaceUtils::print_metaspace_change(pre_gc_values.metaspace_sizes());
 }
 
 class GenGCPrologueClosure: public GenCollectedHeap::GenClosure {

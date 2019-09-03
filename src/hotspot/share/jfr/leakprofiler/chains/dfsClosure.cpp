@@ -121,7 +121,7 @@ void DFSClosure::closure_impl(const oop* reference, const oop pointee) {
   assert(_mark_bits->is_marked(pointee), "invariant");
 
   // is the pointee a sample object?
-  if (NULL == pointee->mark()) {
+  if (NULL == pointee->mark().to_pointer()) {
     add_chain();
   }
 
@@ -178,8 +178,7 @@ void DFSClosure::do_oop(narrowOop* ref) {
 
 void DFSClosure::do_root(const oop* ref) {
   assert(ref != NULL, "invariant");
-  assert(is_aligned(ref, HeapWordSize), "invariant");
-  const oop pointee = *ref;
+  const oop pointee = UnifiedOop::dereference(ref);
   assert(pointee != NULL, "invariant");
   closure_impl(ref, pointee);
 }

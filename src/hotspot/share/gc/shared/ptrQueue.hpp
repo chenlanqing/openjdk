@@ -211,7 +211,6 @@ class BufferNode {
 
   static BufferNode* volatile* next_ptr(BufferNode& bn) { return &bn._next; }
 
-AIX_ONLY(public:)               // xlC 12 on AIX doesn't implement C++ DR45.
   // Allocate a new BufferNode with the "buffer" having size elements.
   static BufferNode* allocate(size_t size);
 
@@ -296,6 +295,10 @@ public:
 class PtrQueueSet {
   BufferNode::Allocator* _allocator;
 
+  // Noncopyable - not defined.
+  PtrQueueSet(const PtrQueueSet&);
+  PtrQueueSet& operator=(const PtrQueueSet&);
+
 protected:
   bool _all_active;
 
@@ -308,6 +311,9 @@ protected:
   void initialize(BufferNode::Allocator* allocator);
 
 public:
+
+  // Return the associated BufferNode allocator.
+  BufferNode::Allocator* allocator() const { return _allocator; }
 
   // Return the buffer for a BufferNode of size buffer_size().
   void** allocate_buffer();

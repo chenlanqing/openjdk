@@ -205,7 +205,7 @@ C2V_VMENTRY_NULL(jobject, getFlagValue, (JNIEnv* env, jobject c2vm, jobject name
     JVMCI_THROW_NULL(NullPointerException);
   }
   const char* cstring = JVMCIENV->as_utf8_string(name);
-  JVMFlag* flag = JVMFlag::find_flag(cstring, strlen(cstring), /* allow_locked */ true, /* return_flag */ true);
+  const JVMFlag* flag = JVMFlag::find_declared_flag(cstring);
   if (flag == NULL) {
     return c2vm;
   }
@@ -2208,8 +2208,7 @@ C2V_VMENTRY_NULL(jobject, getObject, (JNIEnv* env, jobject, jobject x, long disp
 C2V_VMENTRY(void, deleteGlobalHandle, (JNIEnv* env, jobject, jlong h))
   jobject handle = (jobject)(address)h;
   if (handle != NULL) {
-    assert(JVMCI::is_global_handle(handle), "Invalid delete of global JNI handle");
-    *((oop*)handle) = NULL; // Mark the handle as deleted, allocate will reuse it
+    JVMCI::destroy_global(handle);
   }
 }
 

@@ -801,6 +801,73 @@ static void *thread_native_entry(Thread *thread) {
   return 0;
 }
 
+// On Linux, glibc places static TLS blocks (for __thread variables) on
+// the thread stack. This decreases the stack size actually available
+// to threads.
+//
+// For large static TLS sizes, this may cause threads to malfunction due
+// to insufficient stack space. This is a well-known issue in glibc:
+// http://sourceware.org/bugzilla/show_bug.cgi?id=11787.
+//
+// As a workaround, we call a private but assumed-stable glibc function,
+// __pthread_get_minstack() to obtain the minstack size and derive the
+// static TLS size from it. We then increase the user requested stack
+// size by this TLS size.
+//
+// Due to compatibility concerns, this size adjustment is opt-in and
+// controlled via AdjustStackSizeForTLS.
+typedef size_t (*GetMinStack)(const pthread_attr_t *attr);
+
+GetMinStack _get_minstack_func = NULL;
+
+static void get_minstack_init() {
+  _get_minstack_func =
+        (GetMinStack)dlsym(RTLD_DEFAULT, "__pthread_get_minstack");
+  log_info(os, thread)("Lookup of __pthread_get_minstack %s",
+                       _get_minstack_func == NULL ? "failed" : "succeeded");
+}
+
+// Returns the size of the static TLS area glibc puts on thread stacks.
+// The value is cached on first use, which occurs when the first thread
+// is created during VM initialization.
+static size_t get_static_tls_area_size(const pthread_attr_t *attr) {
+  size_t tls_size = 0;
+  if (_get_minstack_func != NULL) {
+    // Obtain the pthread minstack size by calling __pthread_get_minstack.
+    size_t minstack_size = _get_minstack_func(attr);
+
+    // Remove non-TLS area size included in minstack size returned
+    // by __pthread_get_minstack() to get the static TLS size.
+    // In glibc before 2.27, minstack size includes guard_size.
+    // In glibc 2.27 and later, guard_size is automatically added
+    // to the stack size by pthread_create and is no longer included
+    // in minstack size. In both cases, the guard_size is taken into
+    // account, so there is no need to adjust the result for that.
+    //
+    // Although __pthread_get_minstack() is a private glibc function,
+    // it is expected to have a stable behavior across future glibc
+    // versions while glibc still allocates the static TLS blocks off
+    // the stack. Following is glibc 2.28 __pthread_get_minstack():
+    //
+    // size_t
+    // __pthread_get_minstack (const pthread_attr_t *attr)
+    // {
+    //   return GLRO(dl_pagesize) + __static_tls_size + PTHREAD_STACK_MIN;
+    // }
+    //
+    //
+    // The following 'minstack_size > os::vm_page_size() + PTHREAD_STACK_MIN'
+    // if check is done for precaution.
+    if (minstack_size > (size_t)os::vm_page_size() + PTHREAD_STACK_MIN) {
+      tls_size = minstack_size - os::vm_page_size() - PTHREAD_STACK_MIN;
+    }
+  }
+
+  log_info(os, thread)("Stack size adjustment for TLS is " SIZE_FORMAT,
+                       tls_size);
+  return tls_size;
+}
+
 bool os::create_thread(Thread* thread, ThreadType thr_type,
                        size_t req_stack_size) {
   assert(thread->osthread() == NULL, "caller responsible");
@@ -826,7 +893,7 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
 
   // Calculate stack size if it's not specified by caller.
   size_t stack_size = os::Posix::get_initial_stack_size(thr_type, req_stack_size);
-  // In the Linux NPTL pthread implementation the guard size mechanism
+  // In glibc versions prior to 2.7 the guard size mechanism
   // is not implemented properly. The posix standard requires adding
   // the size of the guard pages to the stack size, instead Linux
   // takes the space out of 'stacksize'. Thus we adapt the requested
@@ -834,16 +901,26 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   // behaviour. However, be careful not to end up with a size
   // of zero due to overflow. Don't add the guard page in that case.
   size_t guard_size = os::Linux::default_guard_size(thr_type);
-  if (stack_size <= SIZE_MAX - guard_size) {
-    stack_size += guard_size;
+  // Configure glibc guard page. Must happen before calling
+  // get_static_tls_area_size(), which uses the guard_size.
+  pthread_attr_setguardsize(&attr, guard_size);
+
+  size_t stack_adjust_size = 0;
+  if (AdjustStackSizeForTLS) {
+    // Adjust the stack_size for on-stack TLS - see get_static_tls_area_size().
+    stack_adjust_size += get_static_tls_area_size(&attr);
+  } else {
+    stack_adjust_size += guard_size;
+  }
+
+  stack_adjust_size = align_up(stack_adjust_size, os::vm_page_size());
+  if (stack_size <= SIZE_MAX - stack_adjust_size) {
+    stack_size += stack_adjust_size;
   }
   assert(is_aligned(stack_size, os::vm_page_size()), "stack_size not aligned");
 
   int status = pthread_attr_setstacksize(&attr, stack_size);
   assert_status(status == 0, status, "pthread_attr_setstacksize");
-
-  // Configure glibc guard page.
-  pthread_attr_setguardsize(&attr, os::Linux::default_guard_size(thr_type));
 
   ThreadState state;
 
@@ -1662,6 +1739,8 @@ void * os::dll_load(const char *filename, char *ebuf, int ebuflen) {
   void * result = NULL;
   bool load_attempted = false;
 
+  log_info(os)("attempting shared library load of %s", filename);
+
   // Check whether the library to load might change execution rights
   // of the stack. If they are changed, the protection of the stack
   // guard pages will be lost. We need a safepoint to fix this.
@@ -1913,8 +1992,10 @@ void * os::Linux::dlopen_helper(const char *filename, char *ebuf,
       ebuf[ebuflen-1]='\0';
     }
     Events::log(NULL, "Loading shared library %s failed, %s", filename, error_report);
+    log_info(os)("shared library load of %s failed, %s", filename, error_report);
   } else {
     Events::log(NULL, "Loaded shared library %s", filename);
+    log_info(os)("shared library load of %s was successful", filename);
   }
   return result;
 }
@@ -2599,16 +2680,7 @@ void os::print_jni_name_suffix_on(outputStream* st, int args_size) {
 ////////////////////////////////////////////////////////////////////////////////
 // sun.misc.Signal support
 
-static volatile jint sigint_count = 0;
-
 static void UserHandler(int sig, void *siginfo, void *context) {
-  // 4511530 - sem_post is serialized and handled by the manager thread. When
-  // the program is interrupted by Ctrl-C, SIGINT is sent to every thread. We
-  // don't want to flood the manager thread with sem_post requests.
-  if (sig == SIGINT && Atomic::add(1, &sigint_count) > 1) {
-    return;
-  }
-
   // Ctrl-C is pressed during error reporting, likely because the error
   // handler fails to abort. Let VM die immediately.
   if (sig == SIGINT && VMError::is_error_reported()) {
@@ -2681,7 +2753,6 @@ void os::signal_notify(int sig) {
 }
 
 static int check_pending_signals() {
-  Atomic::store(0, &sigint_count);
   for (;;) {
     for (int i = 0; i < NSIG + 1; i++) {
       jint n = pending_signals[i];
@@ -5145,6 +5216,10 @@ jint os::init_2(void) {
     jdk_misc_signal_init();
   }
 
+  if (AdjustStackSizeForTLS) {
+    get_minstack_init();
+  }
+
   // Check and sets minimum stack sizes against command line options
   if (Posix::set_minimum_stack_sizes() == JNI_ERR) {
     return JNI_ERR;
@@ -6108,6 +6183,10 @@ int os::compare_file_modified_times(const char* file1, const char* file2) {
     return filetime1.tv_nsec - filetime2.tv_nsec;
   }
   return diff;
+}
+
+bool os::supports_map_sync() {
+  return true;
 }
 
 /////////////// Unit tests ///////////////

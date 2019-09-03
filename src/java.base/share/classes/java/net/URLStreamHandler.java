@@ -30,6 +30,7 @@ import java.io.InputStream;
 import java.io.File;
 import java.io.OutputStream;
 import java.util.Hashtable;
+import java.util.Objects;
 import sun.net.util.IPAddressUtil;
 import sun.net.www.ParseUtil;
 
@@ -343,10 +344,7 @@ public abstract class URLStreamHandler {
      * @since 1.3
      */
     protected boolean equals(URL u1, URL u2) {
-        String ref1 = u1.getRef();
-        String ref2 = u2.getRef();
-        return (ref1 == ref2 || (ref1 != null && ref1.equals(ref2))) &&
-               sameFile(u1, u2);
+        return Objects.equals(u1.getRef(), u2.getRef()) && sameFile(u1, u2);
     }
 
     /**
@@ -516,12 +514,15 @@ public abstract class URLStreamHandler {
      *                                  different from this one
      * @since 1.3
      */
-       protected void setURL(URL u, String protocol, String host, int port,
+    protected void setURL(URL u, String protocol, String host, int port,
                              String authority, String userInfo, String path,
                              String query, String ref) {
         if (this != u.handler) {
             throw new SecurityException("handler for url different from " +
                                         "this handler");
+        } else if (host != null && u.isBuiltinStreamHandler(this)) {
+            String s = IPAddressUtil.checkHostString(host);
+            if (s != null) throw new IllegalArgumentException(s);
         }
         // ensure that no one can reset the protocol on a given URL.
         u.set(u.getProtocol(), host, port, authority, userInfo, path, query, ref);
